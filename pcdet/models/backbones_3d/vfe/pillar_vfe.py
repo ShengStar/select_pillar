@@ -286,6 +286,7 @@ class PillarVFE(VFETemplate):
             points_cls[:,0] = 0
             dict_cls = {'gt_boxes':gt_box_cls,'point_coords':points_cls}
             targets_dict = self.assign_targets(dict_cls)
+            points_cls = targets_dict['point_cls_labels']
 
             voxel_output = self.voxel_generator.generate(point_s[:,1:5].cpu().numpy())
             voxels, coordinates, num_points = voxel_output
