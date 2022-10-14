@@ -1,9 +1,62 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 from .vfe_template import VFETemplate
 
+tv = None
+try:
+    import cumm.tensorview as tv
+except:
+    pass
+
+class VoxelGeneratorWrapper():
+    def __init__(self, vsize_xyz, coors_range_xyz, num_point_features, max_num_points_per_voxel, max_num_voxels):
+        try:
+            from spconv.utils import VoxelGeneratorV2 as VoxelGenerator
+            self.spconv_ver = 1
+        except:
+            try:
+                from spconv.utils import VoxelGenerator
+                self.spconv_ver = 1
+            except:
+                from spconv.utils import Point2VoxelCPU3d as VoxelGenerator
+                self.spconv_ver = 2
+
+        if self.spconv_ver == 1:
+            self._voxel_generator = VoxelGenerator(
+                voxel_size=vsize_xyz,
+                point_cloud_range=coors_range_xyz,
+                max_num_points=max_num_points_per_voxel,
+                max_voxels=max_num_voxels
+            )
+        else:
+            self._voxel_generator = VoxelGenerator(
+                vsize_xyz=vsize_xyz,
+                coors_range_xyz=coors_range_xyz,
+                num_point_features=num_point_features,
+                max_num_points_per_voxel=max_num_points_per_voxel,
+                max_num_voxels=max_num_voxels
+            )
+
+    def generate(self, points):
+        if self.spconv_ver == 1:
+            voxel_output = self._voxel_generator.generate(points)
+            if isinstance(voxel_output, dict):
+                voxels, coordinates, num_points = \
+                    voxel_output['voxels'], voxel_output['coordinates'], voxel_output['num_points_per_voxel']
+            else:
+                voxels, coordinates, num_points = voxel_output
+        else:
+            assert tv is not None, f"Unexpected error, library: 'cumm' wasn't imported properly."
+            voxel_output = self._voxel_generator.point_to_voxel(tv.from_numpy(points))
+            tv_voxels, tv_coordinates, tv_num_points = voxel_output
+            # make copy with numpy(), since numpy_view() will disappear as soon as the generator is deleted
+            voxels = tv_voxels.numpy()
+            coordinates = tv_coordinates.numpy()
+            num_points = tv_num_points.numpy()
+        return voxels, coordinates, num_points
 
 class PFNLayer(nn.Module):
     def __init__(self,
@@ -52,7 +105,7 @@ class PFNLayer(nn.Module):
 class PillarVFE(VFETemplate):
     def __init__(self, model_cfg, num_point_features, voxel_size, point_cloud_range, **kwargs):
         super().__init__(model_cfg=model_cfg)
-
+        voxel_size = [0.16, 0.16, 4]
         self.use_norm = self.model_cfg.USE_NORM
         self.with_distance = self.model_cfg.WITH_DISTANCE
         self.use_absolute_xyz = self.model_cfg.USE_ABSLOTE_XYZ
@@ -72,13 +125,20 @@ class PillarVFE(VFETemplate):
                 PFNLayer(in_filters, out_filters, self.use_norm, last_layer=(i >= len(num_filters) - 2))
             )
         self.pfn_layers = nn.ModuleList(pfn_layers)
-
         self.voxel_x = voxel_size[0]
         self.voxel_y = voxel_size[1]
         self.voxel_z = voxel_size[2]
         self.x_offset = self.voxel_x / 2 + point_cloud_range[0]
         self.y_offset = self.voxel_y / 2 + point_cloud_range[1]
         self.z_offset = self.voxel_z / 2 + point_cloud_range[2]
+
+        self.voxel_generator = VoxelGeneratorWrapper(
+                vsize_xyz=[0.16, 0.16, 4],
+                coors_range_xyz=[0, -39.68, -3, 69.12, 39.68, 1],
+                num_point_features=4,
+                max_num_points_per_voxel=32,
+                max_num_voxels=16000,
+            )
 
     def get_output_feature_dim(self):
         return self.num_filters[-1]
@@ -92,8 +152,36 @@ class PillarVFE(VFETemplate):
         return paddings_indicator
 
     def forward(self, batch_dict, **kwargs):
+        points = batch_dict['points']
+        batch_size = batch_dict['batch_size']
+        gt_box = batch_dict['gt_boxes']
+
+        batch_voxels = []
+        batch_coordinates = []
+        batch_num_points = []
+        for i in range(batch_size):
+            mask = points[:,0] == i
+            point_s = points[mask]
+            # gt_box_cls = gt_box[i]
+            # print(gt_box_cls.shape)
+
+            points_cls = point_s[:,0:4]
+
+            voxel_output = self.voxel_generator.generate(point_s[:,1:5].cpu().numpy())
+            voxels, coordinates, num_points = voxel_output
+            dt = np.full((voxels.shape[0]),i)
+            coordinates = np.insert(coordinates,0,dt,axis=1)
+            batch_voxels.append(voxels)
+            batch_coordinates.append(coordinates)
+            batch_num_points.append(num_points)
+        
+        voxel_features = torch.tensor(np.concatenate(batch_voxels,axis=0)).cuda()
+        voxel_num_points = torch.tensor(np.concatenate(batch_num_points,axis=0)).cuda()
+        coords = torch.tensor(np.concatenate(batch_coordinates,axis=0)).cuda()
+        batch_dict['voxel_coords'] = coords
+        
   
-        voxel_features, voxel_num_points, coords = batch_dict['voxels'], batch_dict['voxel_num_points'], batch_dict['voxel_coords']
+        # voxel_features, voxel_num_points, coords = batch_dict['voxels'], batch_dict['voxel_num_points'], batch_dict['voxel_coords']
         points_mean = voxel_features[:, :, :3].sum(dim=1, keepdim=True) / voxel_num_points.type_as(voxel_features).view(-1, 1, 1)
         f_cluster = voxel_features[:, :, :3] - points_mean
 

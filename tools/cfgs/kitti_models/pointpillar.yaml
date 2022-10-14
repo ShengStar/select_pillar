@@ -12,19 +12,24 @@ DATA_CONFIG:
             'train': True,
             'test': False
           }
-
-        - NAME: transform_points_to_voxels
+        - NAME: sample_points
           VOXEL_SIZE: [0.16, 0.16, 4]
-          MAX_POINTS_PER_VOXEL: 32
-          MAX_NUMBER_OF_VOXELS: {
-            'train': 16000,
-            'test': 40000
-          }
+          NUM_POINTS: {
+            'train': 30000,
+            'test': 30000
+            }
+        # - NAME: transform_points_to_voxels
+        #   VOXEL_SIZE: [0.16, 0.16, 4]
+        #   MAX_POINTS_PER_VOXEL: 32
+        #   MAX_NUMBER_OF_VOXELS: {
+        #     'train': 16000,
+        #     'test': 40000
+        #   }
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
-              USE_ROAD_PLANE: True
+              USE_ROAD_PLANE: False
               DB_INFO_PATH:
                   - kitti_dbinfos_train.pkl
               PREPARE: {
