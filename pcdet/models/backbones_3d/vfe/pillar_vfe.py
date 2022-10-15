@@ -137,7 +137,7 @@ class PillarVFE(VFETemplate):
         self.voxel_generator = VoxelGeneratorWrapper(
                 vsize_xyz=[0.16, 0.16, 4],
                 coors_range_xyz=[0, -39.68, -3, 69.12, 39.68, 1],
-                num_point_features=4,
+                num_point_features=5,
                 max_num_points_per_voxel=32,
                 max_num_voxels=16000,
             )
@@ -287,8 +287,10 @@ class PillarVFE(VFETemplate):
             dict_cls = {'gt_boxes':gt_box_cls,'point_coords':points_cls}
             targets_dict = self.assign_targets(dict_cls)
             points_cls = targets_dict['point_cls_labels']
+            points_cls = points_cls.unsqueeze(1)
+            point_s = torch.cat([point_s, points_cls], 1)
 
-            voxel_output = self.voxel_generator.generate(point_s[:,1:5].cpu().numpy())
+            voxel_output = self.voxel_generator.generate(point_s[:,1:6].cpu().numpy())
             voxels, coordinates, num_points = voxel_output
             dt = np.full((voxels.shape[0]),i)
             coordinates = np.insert(coordinates,0,dt,axis=1)
@@ -303,6 +305,10 @@ class PillarVFE(VFETemplate):
         
   
         # voxel_features, voxel_num_points, coords = batch_dict['voxels'], batch_dict['voxel_num_points'], batch_dict['voxel_coords']
+        voxel_cls = voxel_features[:,:,4]
+        batch_dict.update({'voxel_cls':voxel_cls})
+        voxel_features = voxel_features[:,:,0:4]
+        
         points_mean = voxel_features[:, :, :3].sum(dim=1, keepdim=True) / voxel_num_points.type_as(voxel_features).view(-1, 1, 1)
         f_cluster = voxel_features[:, :, :3] - points_mean
 
@@ -310,7 +316,6 @@ class PillarVFE(VFETemplate):
         f_center[:, :, 0] = voxel_features[:, :, 0] - (coords[:, 3].to(voxel_features.dtype).unsqueeze(1) * self.voxel_x + self.x_offset)
         f_center[:, :, 1] = voxel_features[:, :, 1] - (coords[:, 2].to(voxel_features.dtype).unsqueeze(1) * self.voxel_y + self.y_offset)
         f_center[:, :, 2] = voxel_features[:, :, 2] - (coords[:, 1].to(voxel_features.dtype).unsqueeze(1) * self.voxel_z + self.z_offset)
-
         if self.use_absolute_xyz:
             features = [voxel_features, f_cluster, f_center]
         else:
