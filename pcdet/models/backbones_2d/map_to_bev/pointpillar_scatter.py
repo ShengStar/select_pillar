@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 
 class PointPillarScatter(nn.Module):
@@ -19,12 +20,13 @@ class PointPillarScatter(nn.Module):
                 nn.ZeroPad2d(1),
                 nn.Conv2d(8, 1, kernel_size=3,stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(1, eps=1e-3, momentum=0.01),
-                nn.ReLU()
+                nn.Tanh()
             ]
         self.blocks.append(nn.Sequential(*cur_layers))
 
     def forward(self, batch_dict, **kwargs):
         pillar_features, coords = batch_dict['pillar_features'], batch_dict['voxel_coords']
+        pillar_cls_label = batch_dict['voxel_cls'] #[31781, 32]
         batch_spatial_features = []
         batch_size = coords[:, 0].max().int().item() + 1
         batch_indices = []
@@ -53,31 +55,40 @@ class PointPillarScatter(nn.Module):
         spatial_features_1 = batch_spatial_features
         # print(spatial_features.shape)
         spatial_features = self.blocks[0](spatial_features)
+
         batch_spatial_features_output = []
+        select_cls_label_output = []
+        pre_score = []
         for batch_idx in range(batch_size):
             batch_spatial_features_reduce = torch.zeros(
                 self.num_bev_features,
                 self.nz * self.nx * self.ny,
                 dtype=pillar_features.dtype,
                 device=pillar_features.device)
-
+            batch_mask = coords[:, 0] == batch_idx
+            cls_label = pillar_cls_label[batch_mask,:]
             indice = batch_indices[batch_idx]
             features = spatial_features[batch_idx,:,:,:].squeeze(0).view(-1) #可能有错
             features = features[indice]
-            score, index = features.topk(2800,dim=0,largest=True)
+            score, index = features.topk(2000,dim=0,largest=True)
+            select_cls_label = cls_label[index,:]
+            select_cls_label = select_cls_label.sum(dim=1, keepdim=True)
+            select_cls_label_output.append(select_cls_label.unsqueeze(dim=0).cpu().detach().numpy())
+            pre_score.append(score.unsqueeze(dim=0).cpu().detach().numpy())
             
             pillars_index = indice[index]
             spatial_features_1 = batch_spatial_features[batch_idx,:,:,:].view(64,-1)
             batch_spatial_features_reduce[:, pillars_index] = spatial_features_1[:,pillars_index]
             batch_spatial_features_output.append(batch_spatial_features_reduce)
 
-
-            # batch_mask = coords[:, 0] == batch_idx
-            # pillars = pillar_features[batch_mask, :]
-            # pillars = pillars.t()
         batch_spatial_features_output = torch.stack(batch_spatial_features_output, 0)
         batch_spatial_features_output = batch_spatial_features_output.view(batch_size, self.num_bev_features * self.nz, self.ny, self.nx)
         batch_spatial_features = batch_spatial_features_output
+        select_cls_label_output = torch.tensor(np.concatenate(select_cls_label_output,axis=0)).cuda()
+        pre_score = torch.tensor(np.concatenate(pre_score,axis=0)).cuda()
+
+        batch_dict.update({'select_cls_label_output':select_cls_label_output})
+        batch_dict.update({'pre_score':pre_score})
 
 
 

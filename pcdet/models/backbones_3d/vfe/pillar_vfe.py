@@ -165,14 +165,19 @@ class PillarVFE(VFETemplate):
             point_cls_labels: (N1 + N2 + N3 + ...), long type, 0:background, -1:ignored
             point_part_labels: (N1 + N2 + N3 + ..., 3)
         """
-        
+         # 得到每个点的坐标 shape（bacth * 16384, 4），其中4个维度分别是batch_id，x，y，z
         point_coords = input_dict['point_coords'] #torch.Size([4096, 4])
+        # 取出gt_box，shape （batch， num_of_GTs, 8），
+        # 其中维度8表示 x, y, z, l, w, h, heading, class_id
         gt_boxes = input_dict['gt_boxes'] # torch.Size([2, 31, 8])
         # [0.2, 0.2, 0.2]
         assert gt_boxes.shape.__len__() == 3, 'gt_boxes.shape=%s' % str(gt_boxes.shape)
         assert point_coords.shape.__len__() in [2], 'points.shape=%s' % str(point_coords.shape)
-
+        
         batch_size = gt_boxes.shape[0]
+        # 在训练的过程中，需要忽略掉点云中离GTBox较近的点，因为3D的GTBox也会有扰动，
+        # 所以这里通过将每一个GT_box都在x，y，z方向上扩大0.2米，
+        # 来检测哪些点是属于扩大后才有的点，增强点云分割的健壮性
         extend_gt_boxes = box_utils.enlarge_box3d(
             gt_boxes.view(-1, gt_boxes.shape[-1]), extra_width=[0.2, 0.2, 0.2]
         ).view(batch_size, -1, gt_boxes.shape[-1])
@@ -209,28 +214,41 @@ class PillarVFE(VFETemplate):
         assert extend_gt_boxes is None or len(extend_gt_boxes.shape) == 3 and extend_gt_boxes.shape[2] == 8, \
             'extend_gt_boxes.shape=%s' % str(extend_gt_boxes.shape)
         assert set_ignore_flag != use_ball_constraint, 'Choose one only!'
+        # 得到一批数据中batch_size的大小，以方便逐帧完成target assign
         batch_size = gt_boxes.shape[0]
 
         bs_idx = points[:, 0]
-
+        # 初始化每个点云的类别，默认全0； shape （batch * 16384）
         point_cls_labels = points.new_zeros(points.shape[0]).long()
+        # 初始化每个点云预测box的参数，默认全0； shape （batch * 16384, 8）
         point_box_labels = gt_boxes.new_zeros((points.shape[0], 8)) if ret_box_labels else None
         point_part_labels = gt_boxes.new_zeros((points.shape[0], 3)) if ret_part_labels else None
+        # 逐帧点云数据进行处理
         for k in range(batch_size):
+            # 得到一个mask，用于取出一批数据中属于当前帧的点
             bs_mask = (bs_idx == k)
+            # 取出对应的点shape   (16384, 3)
             points_single = points[bs_mask][:, 1:4]
+            # 初始化当前帧中点的类别，默认为0    (16384, )
             point_cls_labels_single = point_cls_labels.new_zeros(bs_mask.sum())
+            # 计算哪些点在GTbox中, box_idxs_of_pts
             box_idxs_of_pts = roiaware_pool3d_utils.points_in_boxes_gpu(
                 points_single.unsqueeze(dim=0), gt_boxes[k:k + 1, :, 0:7].contiguous()
             ).long().squeeze(dim=0)
+            # mask 表明该帧中的哪些点属于前景点，哪些点属于背景点;得到属于前景点的mask
             box_fg_flag = (box_idxs_of_pts >= 0)
+            # 是否忽略在enlarge box中的点 True
             if set_ignore_flag:
+                # 计算哪些点在GTbox_enlarge中
                 extend_box_idxs_of_pts = roiaware_pool3d_utils.points_in_boxes_gpu(
                     points_single.unsqueeze(dim=0), extend_gt_boxes[k:k+1, :, 0:7].contiguous()
                 ).long().squeeze(dim=0)
+                # 前景点
                 fg_flag = box_fg_flag
+                # ^为异或运算符，不同为真，相同为假，这样就可以得到真实GT enlarge后的的点了
                 ignore_flag = fg_flag ^ (extend_box_idxs_of_pts >= 0)
-                point_cls_labels_single[ignore_flag] = -1
+                # 将这些真实GT边上的点设置为-1      loss计算时，不考虑这类点
+                point_cls_labels_single[ignore_flag] = 0 # 可能出错
             elif use_ball_constraint:
                 box_centers = gt_boxes[k][box_idxs_of_pts][:, 0:3].clone()
                 box_centers[:, 2] += gt_boxes[k][box_idxs_of_pts][:, 5] / 2
@@ -306,7 +324,7 @@ class PillarVFE(VFETemplate):
   
         # voxel_features, voxel_num_points, coords = batch_dict['voxels'], batch_dict['voxel_num_points'], batch_dict['voxel_coords']
         voxel_cls = voxel_features[:,:,4]
-        batch_dict.update({'voxel_cls':voxel_cls})
+        batch_dict.update({'voxel_cls':voxel_cls}) # [23084, 32]
         voxel_features = voxel_features[:,:,0:4]
         
         points_mean = voxel_features[:, :, :3].sum(dim=1, keepdim=True) / voxel_num_points.type_as(voxel_features).view(-1, 1, 1)

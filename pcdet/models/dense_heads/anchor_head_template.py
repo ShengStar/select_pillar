@@ -98,8 +98,44 @@ class AnchorHeadTemplate(nn.Module):
         )
         return targets_dict
 
+    def get_pillar_cls_layer_loss(self):
+        pillar_preds = self.forward_ret_dict['pre_score']  # 类别预测结果 [N, H, W, C1] = [3, 248, 216, 18]
+        pillar_cls_labels = self.forward_ret_dict['select_cls_label_output'].squeeze(dim=-1)  # pillar类别标签
+        # print(pillar_preds.shape)
+        pillar_cls_labels = torch.where(pillar_cls_labels > 0, 1, 0)
+        batch_size = pillar_preds.shape[0]
+        num_class = 1
+        cared = pillar_cls_labels >= 0  # [N, num_anchors] ，我们只关心>=0标签的box [4, 321408]
+        positives = pillar_cls_labels > 0  # 标签>0 正样本
+        negatives = pillar_cls_labels == 0  # 标签=0 负样本
+        negative_cls_weights = negatives * 1.0  # 负样本类别权重，0变1
+        cls_weights = (negative_cls_weights + 1.0 * positives).float()  # 正负样本全部变1、2，3
+        reg_weights = positives.float()  # 只保留标签>0的值
+        pillar_cls_labels[positives] = 1 # 只预测一个类别
+        pos_normalizer = positives.sum(1, keepdim=True).float()  # 行和，维度保留[3,1]，根据统计，每行都是100以上的值=1x?+2x?+3x?
+        reg_weights /= torch.clamp(pos_normalizer, min=1.0)  # 最小1.0 ,很像归一化, 仅是正样本
+        cls_weights /= torch.clamp(pos_normalizer, min=1.0)  # 正负样本归一化？
+        cls_targets = pillar_cls_labels * cared.type_as(pillar_cls_labels)  # 只保留标签>0的类别
+        cls_targets = cls_targets.unsqueeze(dim=-1)  # 增加1个维度 [3, 321408, 1]
+        cls_targets = cls_targets.squeeze(dim=-1)  # 又减少一个维度???!!!  [3, 321408]
+        one_hot_targets = torch.zeros(  # [3, 321408, 4]
+            *list(cls_targets.shape), num_class + 1, dtype=pillar_preds.dtype, device=cls_targets.device
+        )
+        one_hot_targets.scatter_(-1, cls_targets.unsqueeze(dim=-1).long(), 1.0)  # 转为one-hot类型
+        pillar_preds = pillar_preds.view(batch_size, -1, num_class) #torch.Size([4, 2000, 1])
+        one_hot_targets = one_hot_targets[..., 1:] # torch.Size([8000, 1, 1])
+        cls_loss_src = self.cls_loss_func(pillar_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+        cls_loss = cls_loss_src.sum() / batch_size
+
+        cls_loss = cls_loss * 1
+        tb_dict = {
+            'pillar_loss_cls': cls_loss.item()
+        }
+        return cls_loss, tb_dict
+
+
     def get_cls_layer_loss(self):
-        cls_preds = self.forward_ret_dict['cls_preds']
+        cls_preds = self.forward_ret_dict['cls_preds'] # [4, 248, 216, 18]
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
         batch_size = int(cls_preds.shape[0])
         cared = box_cls_labels >= 0  # [N, num_anchors]
@@ -216,8 +252,11 @@ class AnchorHeadTemplate(nn.Module):
     def get_loss(self):
         cls_loss, tb_dict = self.get_cls_layer_loss()
         box_loss, tb_dict_box = self.get_box_reg_layer_loss()
+        pillar_loss, tb_dict_pillar = self.get_pillar_cls_layer_loss()
         tb_dict.update(tb_dict_box)
-        rpn_loss = cls_loss + box_loss
+        tb_dict.update(tb_dict_pillar)
+        
+        rpn_loss = cls_loss + box_loss + pillar_loss
 
         tb_dict['rpn_loss'] = rpn_loss.item()
         return rpn_loss, tb_dict

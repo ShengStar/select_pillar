@@ -40,6 +40,11 @@ class AnchorHeadSingle(AnchorHeadTemplate):
 
     def forward(self, data_dict):
         spatial_features_2d = data_dict['spatial_features_2d']
+        select_cls_label_output = data_dict['select_cls_label_output']
+        pre_score = data_dict['pre_score']
+
+        self.forward_ret_dict.update({'select_cls_label_output':select_cls_label_output})
+        self.forward_ret_dict.update({'pre_score':pre_score})
 
         cls_preds = self.conv_cls(spatial_features_2d)
         box_preds = self.conv_box(spatial_features_2d)
