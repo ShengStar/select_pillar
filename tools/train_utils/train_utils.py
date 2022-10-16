@@ -45,6 +45,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         optimizer.zero_grad()
 
         loss, tb_dict, disp_dict = model_func(model, batch)
+        
 
         forward_timer = time.time()
         cur_forward_time = forward_timer - data_timer

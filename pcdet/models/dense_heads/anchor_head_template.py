@@ -73,7 +73,7 @@ class AnchorHeadTemplate(nn.Module):
     def build_losses(self, losses_cfg):
         self.add_module(
             'cls_loss_func',
-            loss_utils.SigmoidFocalClassificationLoss(alpha=0.25, gamma=2.0)
+            loss_utils.WeightedBinaryCrossEntropyLoss()
         )
         reg_loss_name = 'WeightedSmoothL1Loss' if losses_cfg.get('REG_LOSS_TYPE', None) is None \
             else losses_cfg.REG_LOSS_TYPE
@@ -103,6 +103,7 @@ class AnchorHeadTemplate(nn.Module):
         pillar_cls_labels = self.forward_ret_dict['select_cls_label_output'].squeeze(dim=-1)  # pillar类别标签
         # print(pillar_preds.shape)
         pillar_cls_labels = torch.where(pillar_cls_labels > 0, 1, 0)
+        print(sum(sum(pillar_cls_labels)))
         batch_size = pillar_preds.shape[0]
         num_class = 1
         cared = pillar_cls_labels >= 0  # [N, num_anchors] ，我们只关心>=0标签的box [4, 321408]

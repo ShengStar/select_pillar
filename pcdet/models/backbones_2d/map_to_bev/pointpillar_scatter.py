@@ -20,7 +20,7 @@ class PointPillarScatter(nn.Module):
                 nn.ZeroPad2d(1),
                 nn.Conv2d(8, 1, kernel_size=3,stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(1, eps=1e-3, momentum=0.01),
-                nn.Tanh()
+                nn.Sigmoid()
             ]
         self.blocks.append(nn.Sequential(*cur_layers))
 
